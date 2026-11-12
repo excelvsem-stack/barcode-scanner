@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сканер и Ввод</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 15px; background-color: #f4f4f9; }
+    h2 { margin-bottom: 10px; color: #333; }
+    .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    #reader { width: 100%; background: #000; border-radius: 10px; overflow: hidden; display: none; margin-bottom: 15px; }
+    select, input, button { padding: 12px; font-size: 16px; margin: 8px 0; width: 100%; box-sizing: border-box; border-radius: 5px; border: 1px solid #ccc; }
+    button { background-color: #4285F4; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
+    button:hover { background-color: #3367D6; }
+    button:disabled { background-color: #ccc; }
+    .manual-input { display: flex; gap: 10px; }
+    .manual-input input { flex: 1; margin: 0; }
+    .manual-input button { width: auto; margin: 0; background-color: #34A853; }
+    #result { margin-top: 15px; padding: 15px; border-radius: 5px; display: none; font-weight: bold; }
+    .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    #status { margin-top: 10px; color: #666; font-size: 14px; }
+    hr { border: 0; border-top: 1px solid #eee; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Управление операциями</h2>
+    
+    <select id="operationSelect">
+      <option value="">Выберите операцию...</option>
+      <option value="Приемка">Приемка</option>
+      <option value="Сборка">Сборка</option>
+      <option value="Проверка">Проверка</option>
+      <option value="Упаковка">Упаковка</option>
+    </select>
+
+    <hr>
+
+    <!-- Блок сканирования камерой (для телефона) -->
+    <button id="startBtn" onclick="startScanner()">📷 Включить камеру</button>
+    <div id="reader"></div>
+    <div id="status"></div>
+
+    <hr>
+
+    <!-- Блок ручного ввода (для ПК и USB-сканеров) -->
+    <div class="manual-input">
+      <input type="text" id="manualCode" placeholder="Введите штрих-код вручную" onkeypress="handleKeyPress(event)">
+      <button onclick="submitManual()">ОК</button>
+    </div>
+
+    <div id="result"></div>
+  </div>
+
+  <script>
+    // ВАША ССЫЛКА ИЗ GOOGLE APPS SCRIPT
+    const scriptUrl = 'https://script.google.com/macros/s/AKfycbwEZuaz75NkkKfOmhhFI_ZpXq7hUWjqyIBXPgRS979Wcqs539wcI0wXwe0b3vEtDJBdmw/exec';
+
+    let html5QrCode;
+    let isScanning = false;
+
+    // Функция запуска камеры
+    function startScanner() {
+      const readerDiv = document.getElementById('reader');
+      const startBtn = document.getElementById('startBtn');
+      const statusDiv = document.getElementById('status');
+
+      readerDiv.style.display = 'block';
+      startBtn.disabled = true;
+      statusDiv.innerText = "Поиск камеры...";
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      // Пытаемся включить заднюю камеру (на телефоне). Если её нет (на ПК), включится фронтальная.
+      html5QrCode.start(
+        { facingMode: "environment" }, 
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        onScanSuccess
+      ).then(() => {
+        isScanning = true;
+        statusDiv.innerText = "Наведите камеру на штрих-код";
+      }).catch(err => {
+        console.warn("Не удалось включить заднюю камеру, пробуем фронтальную...", err);
+        // Если задней нет (ПК), пробуем включить любую доступную
+        html5QrCode.start(
+          { facingMode: "user" }, 
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          onScanSuccess
+        ).then(() => {
+          isScanning = true;
+          statusDiv.innerText = "Наведите веб-камеру на штрих-код";
+        }).catch(err2 => {
+          statusDiv.innerText = "Камера недоступна. Используйте ручной ввод.";
+          startBtn.disabled = false;
+          readerDiv.style.display = 'none';
+        });
+      });
+    }
+
+    // Успешное сканирование
+    function onScanSuccess(decodedText, decodedResult) {
+      if (!isScanning) return;
+      
+      html5QrCode.stop().then(() => {
+        isScanning = false;
+        document.getElementById('reader').style.display = 'none';
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('status').innerText = "";
+        
+        processData(decodedText);
+      });
+    }
+
+    // Обработка нажатия Enter в поле ручного ввода
+    function handleKeyPress(e) {
+      if (e.key === 'Enter') {
+        submitManual();
+      }
+    }
+
+    // Отправка данных при ручном вводе
+    function submitManual() {
+      const code = document.getElementById('manualCode').value.trim();
+      if (!code) {
+        alert("Введите штрих-код!");
+        return;
+      }
+      processData(code);
+      document.getElementById('manualCode').value = ''; // Очищаем поле после ввода
+    }
+
+    // Общая функция отправки на сервер
+    function processData(scannedCode) {
+      const operation = document.getElementById('operationSelect').value;
+      const resultDiv = document.getElementById('result');
+
+      if (!operation) {
+        alert("Сначала выберите операцию из списка!");
+        return;
+      }
+
+      resultDiv.style.display = 'block';
+      resultDiv.className = '';
+      resultDiv.innerText = "Проверка данных для кода: " + scannedCode;
+
+      // Отправляем данные в Google Script через fetch
+      fetch(scriptUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code: scannedCode,
+          operation: operation
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          resultDiv.className = 'success';
+          resultDiv.innerText = data.message;
+        } else {
+          resultDiv.className = 'error';
+          resultDiv.innerText = data.message;
+        }
+        setTimeout(() => { resultDiv.style.display = 'none'; }, 5000);
+      })
+      .catch((error) => {
+        resultDiv.className = 'error';
+        resultDiv.innerText = "Ошибка сети: " + error;
+        setTimeout(() => { resultDiv.style.display = 'none'; }, 5000);
+      });
+    }
+  </script>
+</body>
+</html>
+      statusDiv.innerText = "Поиск камеры...";
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      // Пытаемся включить заднюю камеру (на телефоне). Если её нет (на ПК), включится фронтальная.
+      html5QrCode.start(
+        { facingMode: "environment" }, 
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        onScanSuccess
+      ).then(() => {
+        isScanning = true;
+        statusDiv.innerText = "Наведите камеру на штрих-код";
+      }).catch(err => {
+        console.warn("Не удалось включить заднюю камеру, пробуем фронтальную...", err);
+        // Если задней нет (ПК), пробуем включить любую доступную
+        html5QrCode.start(
+          { facingMode: "user" }, 
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          onScanSuccess
+        ).then(() => {
+          isScanning = true;
+          statusDiv.innerText = "Наведите веб-камеру на штрих-код";
+        }).catch(err2 => {
+          statusDiv.innerText = "Камера недоступна. Используйте ручной ввод.";
+          startBtn.disabled = false;
+          readerDiv.style.display = 'none';
+        });
+      });
+    }
+
+    // Успешное сканирование
+    function onScanSuccess(decodedText, decodedResult) {
+      if (!isScanning) return;
+      
+      html5QrCode.stop().then(() => {
+        isScanning = false;
+        document.getElementById('reader').style.display = 'none';
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('status').innerText = "";
+        
+        processData(decodedText);
+      });
+    }
+
+    // Обработка нажатия Enter в поле ручного ввода
+    function handleKeyPress(e) {
+      if (e.key === 'Enter') {
+        submitManual();
+      }
+    }
+
+    // Отправка данных при ручном вводе
+    function submitManual() {
+      const code = document.getElementById('manualCode').value.trim();
+      if (!code) {
+        alert("Введите штрих-код!");
+        return;
+      }
+      processData(code);
+      document.getElementById('manualCode').value = ''; // Очищаем поле после ввода
+    }
+
+    // Общая функция отправки на сервер
+    function processData(scannedCode) {
+      const operation = document.getElementById('operationSelect').value;
+      const resultDiv = document.getElementById('result');
+
+      if (!operation) {
+        alert("Сначала выберите операцию из списка!");
+        return;
+      }
+
+      resultDiv.style.display = 'block';
+      resultDiv.className = '';
+      resultDiv.innerText = "Проверка данных для кода: " + scannedCode;
+
+      google.script.run.withSuccessHandler(function(response) {
+        if (response.success) {
+          resultDiv.className = 'success';
+          resultDiv.innerText = response.message;
+        } else {
+          resultDiv.className = 'error';
+          resultDiv.innerText = response.message;
+        }
+        setTimeout(() => { resultDiv.style.display = 'none'; }, 5000);
+      }).processScan(scannedCode, operation);
+    }
+  </script>
+</body>
+</html>
